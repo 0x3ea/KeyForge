@@ -34,8 +34,8 @@ pub struct GenArgs {
     #[arg(short = 'l', long = "length")]
     pub length: Option<u32>,
 
-    #[arg(short = 's', long = "symbols")]
-    pub symbols: bool,
+    #[arg(short = 's', long = "symbols", num_args = 0..=1, require_equals = true)]
+    pub symbols: Option<Option<String>>,
 
     #[arg(short = 'p', long = "print")]
     pub print: bool,
@@ -107,7 +107,42 @@ mod tests {
                 assert_eq!(a.site, "github.com");
                 assert_eq!(a.username.as_deref(), Some("alice"));
                 assert_eq!(a.length, Some(20));
-                assert!(a.symbols);
+                assert_eq!(a.symbols, Some(None));
+            }
+            _ => panic!("expected Gen"),
+        }
+    }
+
+    #[test]
+    fn symbols_defaults_to_none() {
+        let cli = Cli::try_parse_from(["keyforge", "gen", "github.com"]).unwrap();
+
+        match cli.command {
+            Commands::Gen(a) => assert_eq!(a.symbols, None),
+            _ => panic!("expected Gen"),
+        }
+    }
+
+    #[test]
+    fn parses_custom_symbols_with_equals() {
+        let cli = Cli::try_parse_from(["keyforge", "gen", "github.com", "--symbols=./{}"]).unwrap();
+
+        match cli.command {
+            Commands::Gen(a) => {
+                assert_eq!(a.symbols, Some(Some("./{}".to_string())));
+            }
+            _ => panic!("expected Gen"),
+        }
+    }
+
+    #[test]
+    fn short_symbols_flag_does_not_consume_print() {
+        let cli = Cli::try_parse_from(["keyforge", "gen", "github.com", "-s", "-p"]).unwrap();
+
+        match cli.command {
+            Commands::Gen(a) => {
+                assert_eq!(a.symbols, Some(None));
+                assert!(a.print);
             }
             _ => panic!("expected Gen"),
         }

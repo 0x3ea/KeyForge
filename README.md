@@ -6,7 +6,7 @@ KeyForge 是一个确定性密码生成器。它根据以下输入生成站点�
 - site
 - username
 - length
-- symbols 开关
+- symbols 符号集
 
 相同输入会稳定生成相同密码，因此不需要保存每个网站的密码；但也意味着你必须牢记 master password，并保持 site / username / length / symbols 配置一致。
 
@@ -36,7 +36,9 @@ KeyForge 是一个确定性密码生成器。它根据以下输入生成站点�
 - Argon2id 密钥派生
 - HMAC-SHA256 扩展输出
 - 拒绝采样生成密码字符，避免取模偏差
-- 可选符号字符集：`!@#$%^&*`
+- 覆盖保证：小写、大写、数字以及启用的符号至少出现一次
+- 内置符号字符集：`!@#$%^&*-_=+`
+- 符号集可按站自定义，也可继承默认配置
 - master password 隐藏输入和二次确认
 - 默认将 username 转为小写
 - site 归一化为 hostname 小写形式
@@ -103,11 +105,19 @@ keyforge github.com -u alice -l 20 -p
 keyforge github.com -u alice -l 24 -s -p
 ```
 
-启用后字符集会额外包含：
+`-s` / `--symbols` 使用内置符号集：
 
 ```text
-!@#$%^&*
+!@#$%^&*-_=+
 ```
+
+自定义符号集使用等号形式：
+
+```bash
+keyforge github.com -u alice -l 24 --symbols="./{}" -p
+```
+
+符号集为空（例如站点配置中的 `""`）表示不含符号。
 
 ### 复制到剪贴板
 
@@ -129,7 +139,7 @@ keyforge github.com -u alice -l 20 -s -r -p
 
 - username
 - length
-- symbols
+- symbols 符号集
 
 如果该站点已经被记住、但本次传入的 username 与已保存的不同，KeyForge 会先询问是否覆盖（`[y/N]`，默认否），避免误改永久配置；username 相同而仅 length / symbols 变化时则直接更新。
 
@@ -166,7 +176,7 @@ keyforge completion powershell
 {
   "defaultUserName": "",
   "defaultLength": 16,
-  "defaultSymbols": false,
+  "defaultSymbols": "!@#$%^&*-_=+",
   "defaultTimeout": 45,
   "defaultPrint": false,
   "defaultRemember": false,
@@ -174,11 +184,13 @@ keyforge completion powershell
     "github.com": {
       "userName": "alice",
       "length": 20,
-      "symbols": true
+      "symbols": "./{}"
     }
   }
 }
 ```
+
+站点 `symbols` 为三态：字段缺省时继承 `defaultSymbols`；`""` 表示该站显式禁用符号；非空字符串使用该字符串作为自定义符号集。`defaultSymbols` 为空时默认不含符号。
 
 Unix 下 KeyForge 会尽量确保：
 
@@ -214,7 +226,7 @@ example.com
 
 ## 派生算法与稳定性
 
-KeyForge 的密码派生参数是固定的、不可配置的——这正是「相同输入永远得到相同输出」的基础。修改下列任一项都会改变输出，因此它们通过 domain separator 的版本号锁定。
+KeyForge 的算法参数通过 domain separator 的版本号锁定，保证相同输入永远得到相同输出。生效字符集、目标长度等派生输入会绑定进 HMAC message，因此不同符号配置也会产生不同密码。
 
 **密钥派生（KDF）**
 
@@ -224,11 +236,14 @@ KeyForge 的密码派生参数是固定的、不可配置的——这正是「�
 
 **密码编码**
 
-- 算法：HMAC-SHA256，domain separator 为 `keyforge-password-encode-v2`
-- 字符集：62 个字母数字（`a-z A-Z 0-9`）；启用 `-s` 时额外加入 8 个符号 `!@#$%^&*`
-- 采用拒绝采样（rejection sampling）将 HMAC 字节均匀映射到字符集，避免 `byte % charset_len` 带来的取模偏差
+- 算法：HMAC-SHA256，domain separator 为 `keyforge-password-encode-v3`
+- 生效字符集按固定顺序由小写、大写、数字以及非空符号集拼接而成；完整 charset 与 `length` 都绑定进 HMAC message
+- 小写 `a-z`、大写 `A-Z`、数字 `0-9` 始终启用；符号集为空时不含符号
+- 内置符号集为 `!@#$%^&*-_=+`（12 个）
+- 覆盖保证常开：每个生效类至少出现 1 个字符；不满足时以整段拒绝采样换 round 重试，`MAX_ROUNDS = 4096`
+- 单字符采样仍使用拒绝采样，避免 `byte % charset_len` 带来的取模偏差
 
-domain separator 里的版本号（`-v1`、`-v2`）是为将来演进预留的：一旦需要调整算法，会递增版本号以区分新旧派生结果，而不是悄悄改变现有站点的输出。
+domain separator 里的版本号用于锁定算法；一旦需要调整编码规则，会递增版本号以区分新旧派生结果，而不是悄悄改变现有站点的输出。
 
 ## 未来计划
 
@@ -243,7 +258,6 @@ domain separator 里的版本号（`-v1`、`-v2`）是为将来演进预留的�
 ├── Cargo.toml                 # Rust package 配置和依赖
 ├── Cargo.lock                 # 锁定依赖版本
 ├── README.md                  # 项目说明
-├── keyforge.md                # 设计和实现计划
 ├── scripts/
 │   └── install.sh             # Linux / macOS 安装脚本
 ├── .github/workflows/         # CI / Release workflow
@@ -374,7 +388,7 @@ KeyForge 可以清除当前系统剪贴板内容，但不能可靠清除剪贴�
 
 当前项目仍处于早期阶段。未来如果编码算法、site 规则或配置解析规则发生变化，相同输入可能生成不同密码。
 
-目前的 KDF 与编码分别通过 domain separator `keyforge-argon2-v1` 和 `keyforge-password-encode-v2` 锁定版本（详见「派生算法与稳定性」），它们是判断输出是否变化的关键。
+目前的 KDF 与编码分别通过 domain separator `keyforge-argon2-v1` 和 `keyforge-password-encode-v3` 锁定版本（详见「派生算法与稳定性」），它们是判断输出是否变化的关键。v3 修改了字符集绑定、默认符号集和覆盖保证，因此从早期版本升级会改变旧输出。
 
 正式使用前，建议：
 

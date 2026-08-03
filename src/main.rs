@@ -4,7 +4,7 @@ use keyforge::{
     clipboard, completions,
     config::{self, config_path, get_config, render_config_summary, SiteConfig},
     crypto::{build_salt, generate_key},
-    encode::encode,
+    encode::{encode, BUILTIN_SYMBOLS, DIGIT, LOWER, UPPER},
     term,
 };
 
@@ -14,7 +14,7 @@ struct ResolvedOptions {
     site: String,
     username: String,
     length: u32,
-    symbols: bool,
+    symbols: String,
     timeout: u32,
     print: bool,
     remember: bool,
@@ -54,12 +54,12 @@ fn run_gen(args: GenArgs) -> Result<(), String> {
         .or_else(|| site_cfg.and_then(|s| s.length))
         .unwrap_or(cfg.default_length);
 
-    let symbols = if args.symbols {
-        true
-    } else {
-        site_cfg
-            .and_then(|s| s.symbols)
-            .unwrap_or(cfg.default_symbols)
+    let symbols = match args.symbols {
+        Some(Some(s)) => s,
+        Some(None) => BUILTIN_SYMBOLS.to_string(),
+        None => site_cfg
+            .and_then(|s| s.symbols.clone())
+            .unwrap_or_else(|| cfg.default_symbols.clone()),
     };
 
     let options = ResolvedOptions {
@@ -76,7 +76,11 @@ fn run_gen(args: GenArgs) -> Result<(), String> {
     let password = term::get_master_password(site_cfg.is_none())?;
     let salt = build_salt(&options.site, &options.username);
     let key = generate_key(&password, &salt)?;
-    let generated = encode(&key, options.length, options.symbols)?;
+    let mut classes = vec![LOWER, UPPER, DIGIT];
+    if !options.symbols.is_empty() {
+        classes.push(options.symbols.as_bytes());
+    }
+    let generated = encode(&key, options.length, &classes)?;
 
     if options.remember {
         let should_save = match cfg.sites.get(&options.site) {

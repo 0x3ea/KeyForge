@@ -1,6 +1,6 @@
 use keyforge::{
     crypto::{build_salt, generate_key},
-    encode::encode,
+    encode::{encode, BUILTIN_SYMBOLS, DIGIT, LOWER, UPPER},
     sensitive::SecretVec,
 };
 
@@ -10,12 +10,20 @@ fn derive_password(
     site: &str,
     username: &str,
     length: u32,
-    symbols: bool,
+    symbols: Option<&str>,
 ) -> Vec<u8> {
     let password = SecretVec::new(master.to_vec()).unwrap();
     let salt = build_salt(site, username);
     let key = generate_key(&password, &salt).unwrap();
-    let generated = encode(&key, length, symbols).unwrap();
+
+    let mut classes = vec![LOWER, UPPER, DIGIT];
+    if let Some(symbols) = symbols {
+        if !symbols.is_empty() {
+            classes.push(symbols.as_bytes());
+        }
+    }
+
+    let generated = encode(&key, length, &classes).unwrap();
     generated.as_bytes().to_vec()
 }
 
@@ -26,14 +34,14 @@ fn same_input_produces_same_output() {
         "github.com",
         "alice",
         16,
-        false,
+        None,
     );
     let b = derive_password(
         b"correct-horse-battery-staple",
         "github.com",
         "alice",
         16,
-        false,
+        None,
     );
     assert_eq!(a, b);
 }
@@ -45,15 +53,9 @@ fn different_master_password_produces_different_output() {
         "github.com",
         "alice",
         16,
-        false,
+        None,
     );
-    let b = derive_password(
-        b"another-master-password!",
-        "github.com",
-        "alice",
-        16,
-        false,
-    );
+    let b = derive_password(b"another-master-password!", "github.com", "alice", 16, None);
     assert_ne!(a, b);
 }
 
@@ -64,14 +66,14 @@ fn different_site_produces_different_output() {
         "github.com",
         "alice",
         16,
-        false,
+        None,
     );
     let b = derive_password(
         b"correct-horse-battery-staple",
         "gitlab.com",
         "alice",
         16,
-        false,
+        None,
     );
     assert_ne!(a, b);
 }
@@ -83,14 +85,60 @@ fn different_username_produces_different_output() {
         "github.com",
         "alice",
         16,
-        false,
+        None,
     );
     let b = derive_password(
         b"correct-horse-battery-staple",
         "github.com",
         "bob",
         16,
-        false,
+        None,
     );
+    assert_ne!(a, b);
+}
+
+#[test]
+fn custom_symbols_are_used_and_every_class_is_covered() {
+    let symbols = "./{}";
+    let password = derive_password(
+        b"correct-horse-battery-staple",
+        "github.com",
+        "alice",
+        16,
+        Some(symbols),
+    );
+
+    let classes = vec![LOWER, UPPER, DIGIT, symbols.as_bytes()];
+    for class in classes {
+        assert!(
+            password.iter().any(|&c| class.contains(&c)),
+            "password is missing at least one character from class {class:?}"
+        );
+    }
+
+    let mut charset = Vec::new();
+    for class in [LOWER, UPPER, DIGIT, symbols.as_bytes()] {
+        charset.extend_from_slice(class);
+    }
+    assert!(password.iter().all(|c| charset.contains(c)));
+}
+
+#[test]
+fn different_symbol_sets_produce_different_output() {
+    let a = derive_password(
+        b"correct-horse-battery-staple",
+        "github.com",
+        "alice",
+        16,
+        Some(BUILTIN_SYMBOLS),
+    );
+    let b = derive_password(
+        b"correct-horse-battery-staple",
+        "github.com",
+        "alice",
+        16,
+        Some("./{}"),
+    );
+
     assert_ne!(a, b);
 }

@@ -2,9 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::fs;
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+
+use crate::encode::BUILTIN_SYMBOLS;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     #[serde(rename = "defaultUserName", default)]
@@ -13,8 +16,8 @@ pub struct Config {
     #[serde(rename = "defaultLength", default = "default_length")]
     pub default_length: u32,
 
-    #[serde(rename = "defaultSymbols", default)]
-    pub default_symbols: bool,
+    #[serde(rename = "defaultSymbols", default = "default_symbols")]
+    pub default_symbols: String,
 
     #[serde(rename = "defaultTimeout", default = "default_timeout")]
     pub default_timeout: u32,
@@ -34,7 +37,7 @@ impl Default for Config {
         Self {
             default_user_name: String::new(),
             default_length: 16,
-            default_symbols: false,
+            default_symbols: BUILTIN_SYMBOLS.to_string(),
             default_timeout: 45,
             default_print: false,
             default_remember: false,
@@ -52,7 +55,7 @@ pub struct SiteConfig {
     pub length: Option<u32>,
 
     #[serde(rename = "symbols", skip_serializing_if = "Option::is_none")]
-    pub symbols: Option<bool>,
+    pub symbols: Option<String>,
 }
 
 pub fn config_path() -> Result<PathBuf, String> {
@@ -114,7 +117,7 @@ pub fn render_config_summary(cfg: &Config, path: &Path) -> String {
     writeln!(
         out,
         "  {}",
-        row("symbols", &cfg.default_symbols.to_string())
+        row("symbols", &fmt_str_or_none(&cfg.default_symbols))
     )
     .unwrap();
     writeln!(
@@ -143,7 +146,7 @@ pub fn render_config_summary(cfg: &Config, path: &Path) -> String {
             writeln!(out, "  {site}:").unwrap();
             writeln!(out, "    {}", row("username", &fmt_opt_str(&sc.user_name))).unwrap();
             writeln!(out, "    {}", row("length", &fmt_opt(&sc.length))).unwrap();
-            writeln!(out, "    {}", row("symbols", &fmt_opt(&sc.symbols))).unwrap();
+            writeln!(out, "    {}", row("symbols", &fmt_symbols(&sc.symbols))).unwrap();
         }
     }
 
@@ -215,6 +218,10 @@ fn default_timeout() -> u32 {
     45
 }
 
+fn default_symbols() -> String {
+    BUILTIN_SYMBOLS.to_string()
+}
+
 fn row(label: &str, value: &str) -> String {
     format!("{label:<8}: {value}")
 }
@@ -235,6 +242,14 @@ fn fmt_opt<T: std::fmt::Display>(o: &Option<T>) -> String {
         .unwrap_or_else(|| "(default)".to_string())
 }
 
+fn fmt_symbols(o: &Option<String>) -> String {
+    match o.as_deref() {
+        None => "(default)".to_string(),
+        Some("") => "(none)".to_string(),
+        Some(symbols) => symbols.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,7 +259,7 @@ mod tests {
 
         assert_eq!(cfg.default_user_name, "");
         assert_eq!(cfg.default_length, 16);
-        assert!(!cfg.default_symbols);
+        assert_eq!(cfg.default_symbols, BUILTIN_SYMBOLS);
         assert_eq!(cfg.default_timeout, 45);
         assert!(!cfg.default_print);
         assert!(!cfg.default_remember);
@@ -256,13 +271,13 @@ mod tests {
         let site = SiteConfig {
             user_name: Some("alice".to_string()),
             length: Some(20),
-            symbols: Some(true),
+            symbols: Some(BUILTIN_SYMBOLS.to_string()),
         };
 
         let json = serde_json::to_string(&site).unwrap();
         assert!(json.contains("\"userName\":\"alice\""));
         assert!(json.contains("\"length\":20"));
-        assert!(json.contains("\"symbols\":true"));
+        assert!(json.contains("\"symbols\":\"!@#$%^&*-_=+\""));
     }
 
     #[test]
@@ -272,7 +287,7 @@ mod tests {
         let cfg: Config = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.default_user_name, "");
         assert_eq!(cfg.default_length, 16);
-        assert!(!cfg.default_symbols);
+        assert_eq!(cfg.default_symbols, BUILTIN_SYMBOLS);
         assert_eq!(cfg.default_timeout, 45);
         assert!(!cfg.default_print);
         assert!(!cfg.default_remember);
@@ -289,7 +304,7 @@ mod tests {
         assert!(out.contains("Defaults:"));
         assert!(out.contains("username: (none)"));
         assert!(out.contains("length  : 16"));
-        assert!(out.contains("symbols : false"));
+        assert!(out.contains("symbols : !@#$%^&*-_=+"));
         assert!(out.contains("Remembered sites:"));
         assert!(out.contains("  (none)"));
     }
@@ -302,7 +317,7 @@ mod tests {
             SiteConfig {
                 user_name: Some("alice".to_string()),
                 length: Some(20),
-                symbols: Some(true),
+                symbols: Some("./{}".to_string()),
             },
         );
 
@@ -311,8 +326,47 @@ mod tests {
         assert!(out.contains("github.com:"));
         assert!(out.contains("username: alice"));
         assert!(out.contains("length  : 20"));
-        assert!(out.contains("symbols : true"));
+        assert!(out.contains("symbols : ./{}"));
         assert!(!out.contains("  (none)")); // 有站点时不再显示 (none)
+    }
+
+    #[test]
+    fn config_deserializes_custom_default_symbols() {
+        let json = r#"{"defaultSymbols":"./{}","sites":{}}"#;
+
+        let cfg: Config = serde_json::from_str(json).unwrap();
+
+        assert_eq!(cfg.default_symbols, "./{}");
+    }
+
+    #[test]
+    fn site_symbols_deserializes_tri_state() {
+        let json = r#"{
+            "sites": {
+                "github.com": {},
+                "gitlab.com": {"symbols": ""},
+                "example.com": {"symbols": "./{}"}
+            }
+        }"#;
+
+        let cfg: Config = serde_json::from_str(json).unwrap();
+
+        assert_eq!(cfg.sites.get("github.com").unwrap().symbols, None);
+        assert_eq!(
+            cfg.sites.get("gitlab.com").unwrap().symbols.as_deref(),
+            Some("")
+        );
+        assert_eq!(
+            cfg.sites.get("example.com").unwrap().symbols.as_deref(),
+            Some("./{}")
+        );
+    }
+
+    #[test]
+    fn fmt_symbols_handles_tri_state() {
+        assert_eq!(fmt_symbols(&None), "(default)");
+        assert_eq!(fmt_symbols(&Some(String::new())), "(none)");
+        assert_eq!(fmt_symbols(&Some("./{}".to_string())), "./{}");
     }
 
     #[test]
